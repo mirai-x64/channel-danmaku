@@ -83,24 +83,36 @@ function driftOut(p, dt){
   }
 }
 
-/* 深夜通販 — 中心から周期的に全方位へ放射 */
+/* 深夜通販 — 中心から周期的に全方位へ放射。腕は回りながら伸びる。
+   同心円状に撃つと外周ほど弾がまばらになり、隅が永久に安全地帯になる。
+   腕を回すと、半径 d で隙間に留まるのに必要な横速度が ω*d になり、
+   外へ逃げるほど忙しくなる。隅の安全地帯はこれで消える。 */
 const shopping = {
   name:'深夜通販', tint:'#ff9d4d',
-  bullets: pool(360), t: 0, wave: 0,
-  reset(){ for(const b of this.bullets) b.live=false; this.t=0; this.wave=0; },
+  bullets: pool(420), th: 0, dir: 1, flip: 0, fire: 0, door: 0,
+  reset(){ for(const b of this.bullets) b.live=false;
+           this.th=0; this.dir=1; this.flip=0; this.fire=0; this.door=0; },
   step(dt, k){
-    this.t += dt;
-    const period = 1.25/k;
-    while(this.t >= period){
-      this.t -= period;
-      const n = 24, off = this.wave*0.13 + rnd(-0.05,0.05), sp = 152*k;
+    this.flip += dt;
+    if(this.flip >= 2.2){ this.flip = 0; this.dir = -this.dir; }  // 巻き戻ると乗っていた隙間が塞がる
+    this.th += this.dir * 1.10 * k * dt;
+
+    this.door += dt;
+    const DOOR = 0.80, OPEN = 0.18;      // 腕に周期的な通り抜け口。腕を横切れる唯一の場所
+    if(this.door >= DOOR) this.door -= DOOR;
+
+    this.fire += dt;
+    const iv = 0.085/k;
+    while(this.fire >= iv){
+      this.fire -= iv;
+      if(this.door < OPEN) continue;
+      const n = 4, sp = 150*k;
       for(let i=0;i<n;i++){
-        const a = off + i*TAU/n, b = take(this.bullets);
+        const a = this.th + i*TAU/n, b = take(this.bullets);
         b.live=true; b.r=6;
         b.x = CX + Math.cos(a)*18; b.y = CY + Math.sin(a)*18;
         b.vx = Math.cos(a)*sp;    b.vy = Math.sin(a)*sp;
       }
-      this.wave++;
     }
     driftOut(this.bullets, dt);
   }
@@ -112,7 +124,7 @@ const weather = {
   bullets: pool(320), edge: 0, pos: 0, fire: 0, phase: 0, sway: 0,
   reset(){ for(const b of this.bullets) b.live=false; this.edge=0; this.pos=0; this.fire=0; this.phase=0; },
   step(dt, k){
-    const travel = 0.46*k;             // 端を渡りきるのに ~2.2s
+    const travel = 0.36*k;             // 端を渡りきるのに ~2.8s
     this.pos += travel*dt;
     if(this.pos >= 1){
       this.pos = 0;
@@ -120,13 +132,13 @@ const weather = {
       this.edge = e;
     }
     this.phase += dt;
-    const cyc = 0.60, on = 0.42;        // 撃つ / 休む で縦縞の隙間ができる
+    const cyc = 0.62, on = 0.36;        // 撃つ / 休む で縦縞の隙間ができる
     this.fire += dt;
     if(this.fire >= 0.055/k){
       this.fire = 0;
       if(this.phase % cyc < on){
         this.sway += 0.31;
-        const t = this.pos, sp = 300*k, a0 = Math.sin(this.sway)*0.20;
+        const t = this.pos, sp = 155*k, a0 = Math.sin(this.sway)*0.20;
         let x,y,ax,ay;
         if(this.edge===0){ x=t*W; y=-12; ax=0; ay=1; }
         else if(this.edge===1){ x=W+12; y=t*H; ax=-1; ay=0; }
@@ -143,18 +155,29 @@ const weather = {
 };
 
 /* 砂嵐 — ゆっくり収縮するリング。閉じきると再展開 */
-const RMAX = 585, RMIN = 46;
+const RMAX = 600, RMIN = 14;
 const sandstorm = {
   name:'砂嵐', tint:'#cfd6e0',
-  bullets: pool(220), R: RMAX, gaps: [],
-  newGaps(){ this.gaps = [rnd(0,TAU), rnd(0,TAU), rnd(0,TAU)]; },
-  reset(){ this.R = RMAX; this.newGaps(); for(const b of this.bullets) b.live=false; },
+  bullets: pool(260), R: RMAX, gaps: [], targ: [], reseed: 0,
+  // 隙間は瞬間移動させない。壁が自分の上に湧いたら避けようがないので、
+  // 目標へ滑らせて「閉じてくるのが見える」状態にする
+  aim(){ this.targ = [rnd(0,TAU), rnd(0,TAU)]; },
+  newGaps(){ this.gaps = [rnd(0,TAU), rnd(0,TAU)]; this.aim(); },
+  reset(){ this.R = RMAX; this.reseed = 0; this.newGaps();
+           for(const b of this.bullets) b.live=false; },
   step(dt, k){
-    this.R -= 82*k*dt;
+    this.R -= Math.min(Math.max(this.R*0.50, 24), 120)*k*dt;  // 内側ほど遅い = 狭い時間が長い
     if(this.R <= RMIN){ this.R = RMAX; this.newGaps(); }
+    this.reseed += dt;
+    if(this.reseed >= 1.25){ this.reseed = 0; this.aim(); }
+    const rate = 1.7*k*dt;
+    for(let i=0;i<this.gaps.length;i++){
+      const d = ((this.targ[i]-this.gaps[i]+Math.PI)%TAU+TAU)%TAU - Math.PI;
+      this.gaps[i] += Math.max(-rate, Math.min(rate, d));
+    }
     const R = this.R;
     // 隙間は弧長が保たれるよう、内側ほど角度を広げる
-    const half = Math.min(1.15, Math.max(0.20, 46/R));
+    const half = Math.min(1.20, Math.max(0.22, 56/R));
     const step = Math.min(0.32, 21/R);
     for(const b of this.bullets) b.live = false;
     for(let a=0; a<TAU; a+=step){
