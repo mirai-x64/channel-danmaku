@@ -75,11 +75,17 @@ function take(p){
   for(let i=0;i<p.length;i++) if(!p[i].live) return p[i];
   const b = mkBullet(); p.push(b); return b;
 }
+/* 画面外へ出た弾を回収する。
+   CULL は「湧かせる位置」より必ず外に取ること。内側にすると、
+   壁が生まれたフレームでそのまま消えて、番組が丸ごと空になる。
+   気象通報を y=-46 から湧かせていた時に、これが -40 だったせいで
+   一発も出ておらず、それを「45秒避けきれた」と読み違えていた。 */
+const CULL = 70;
 function driftOut(p, dt){
   for(const b of p){
     if(!b.live) continue;
     b.x += b.vx*dt; b.y += b.vy*dt;
-    if(b.x<-40||b.x>W+40||b.y<-40||b.y>H+40) b.live=false;
+    if(b.x<-CULL||b.x>W+CULL||b.y<-CULL||b.y>H+CULL) b.live=false;
   }
 }
 
@@ -118,79 +124,115 @@ const shopping = {
   }
 };
 
-/* 気象通報 — 画面端を移動しながら内側へ掃射 */
+/* 気象通報 — 画面端を端から端へ掃射する。一掃きが一枚の壁になり、隙間は一箇所。
+   点から散らすだけだと画面のほとんどが空くので、湧いた先はまず安全になる。
+   端を渡りながら撃つことで、避ける側は「隙間の前に居ればいい」まま、
+   何も知らずに湧いた側は壁のどこかに立つことになる。 */
+const WEA_SWEEP = 1.05, WEA_REST = 0.62, WEA_N = 30, WEA_GAP = 0.085, WEA_SP = 210, WEA_DRIFT = 0.22;
 const weather = {
   name:'気象通報', tint:'#6fd3ff',
-  bullets: pool(320), edge: 0, pos: 0, fire: 0, phase: 0, sway: 0,
-  reset(){ for(const b of this.bullets) b.live=false; this.edge=0; this.pos=0; this.fire=0; this.phase=0; },
+  bullets: pool(620), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true,
+  reset(){ for(const b of this.bullets) b.live=false;
+           this.edge=0; this.pos=0; this.fire=0; this.rest=0; this.gap=0.5; this.sweeping=true; },
   step(dt, k){
-    const travel = 0.36*k;             // 端を渡りきるのに ~2.8s
-    this.pos += travel*dt;
-    if(this.pos >= 1){
-      this.pos = 0;
-      let e; do { e = (Math.random()*4)|0; } while(e === this.edge);
-      this.edge = e;
-    }
-    this.phase += dt;
-    const cyc = 0.62, on = 0.36;        // 撃つ / 休む で縦縞の隙間ができる
-    this.fire += dt;
-    if(this.fire >= 0.055/k){
-      this.fire = 0;
-      if(this.phase % cyc < on){
-        this.sway += 0.31;
-        const t = this.pos, sp = 155*k, a0 = Math.sin(this.sway)*0.20;
+    if(this.sweeping){
+      this.pos += dt*k/WEA_SWEEP;
+      this.fire += dt*k;
+      const iv = WEA_SWEEP/WEA_N;
+      while(this.fire >= iv){
+        this.fire -= iv;
+        const u = Math.min(1, this.pos), sp = WEA_SP*k;
+        if(Math.abs(u - this.gap) < WEA_GAP) continue;   // 隙間。ここだけ通れる
         let x,y,ax,ay;
-        if(this.edge===0){ x=t*W; y=-12; ax=0; ay=1; }
-        else if(this.edge===1){ x=W+12; y=t*H; ax=-1; ay=0; }
-        else if(this.edge===2){ x=(1-t)*W; y=H+12; ax=0; ay=-1; }
-        else { x=-12; y=(1-t)*H; ax=1; ay=0; }
-        const ang = Math.atan2(ay,ax) + a0;
+        // 画面のすぐ外ではなく十分外から湧かせる。端に寄っていると
+        // 壁が自分の上に湧いて、見えた時にはもう当たっている
+        if(this.edge===0){ x=u*W; y=-46; ax=0; ay=1; }
+        else if(this.edge===1){ x=W+46; y=u*H; ax=-1; ay=0; }
+        else if(this.edge===2){ x=u*W; y=H+46; ax=0; ay=-1; }
+        else { x=-46; y=u*H; ax=1; ay=0; }
         const b = take(this.bullets);
         b.live=true; b.r=6; b.x=x; b.y=y;
-        b.vx=Math.cos(ang)*sp; b.vy=Math.sin(ang)*sp;
+        b.vx=ax*sp; b.vy=ay*sp;
+      }
+      if(this.pos >= 1){ this.sweeping=false; this.pos=0; this.rest=0; }
+    } else {
+      this.rest += dt*k;
+      if(this.rest >= WEA_REST){
+        this.sweeping = true; this.fire = 0;
+        /* 向かい合う壁を同時に飛ばさない。
+           上下から来た壁は途中で正面衝突し、その瞬間だけは
+           「両方の隙間に同時に居る」ことが要求される。隙間の移動 WEA_DRIFT が
+           隙間の幅 WEA_GAP を超えていると、そんな点は存在せず盤面が閉じる。
+           直交する壁で同じことに気づいて対辺へ変えたが、対辺は正面から来るぶん更に悪く、
+           完全知覚でも 3.3s しかもたなかった。
+
+           なので飛んでいる間は同じ辺から撃ち続ける。壁が同じ向きに連なるだけなら、
+           追う側は隙間を横に追いかければ抜けられ、通路は途切れない。
+           辺を変えるのは画面が空いてからだけ。 */
+        if(!this.bullets.some(b => b.live)) this.edge = (this.edge + 1 + ((Math.random()*3)|0)) & 3;
+        // 隙間は毎回ずらす。居座れると賭ける動機が消えるので、ここが難度の本体になる
+        this.gap = Math.max(0.10, Math.min(0.90, this.gap + rnd(-WEA_DRIFT, WEA_DRIFT)));
       }
     }
     driftOut(this.bullets, dt);
   }
 };
 
-/* 砂嵐 — ゆっくり収縮するリング。閉じきると再展開 */
-const RMAX = 600, RMIN = 14;
+/* 砂嵐 — 収縮するリング。リングは一本ではなく、外から次々に重なって降りてくる。
+   一本だと危険なのは細い輪の上だけで、盤面のほとんどが空く = 湧いた先はまず安全。
+   何本も重なっていれば、どの半径に湧いてもどれかの輪が近い。
+
+   ただし隙間をリングごとに好き勝手な角度へ置くと、通り抜けられない。
+   輪が通過するたび別の角度へ回り込まされ、完全知覚でも 7.6s しかもたなかった。
+   隙間は全リングで共通の「通路」に揃え、リングごとの散らしは SAND_JIT までにする。
+   こうすると通路は放射状に繋がり、追える側は通路に居れば抜けられる。
+   一方、何も知らずに湧いた側は、通路の外に立っていればどの道どれかの輪に当たる。 */
+const RMAX = 560, RMIN = 14, SAND_NEXT = 300, SAND_JIT = 0.20, SAND_SLIDE = 1.7, SAND_AIM = 1.25;
 const sandstorm = {
   name:'砂嵐', tint:'#cfd6e0',
-  bullets: pool(260), R: RMAX, gaps: [], targ: [], reseed: 0,
-  // 隙間は瞬間移動させない。壁が自分の上に湧いたら避けようがないので、
+  bullets: pool(760), rings: [], reseed: 0,
+  corr: [0, Math.PI], targ: [0, Math.PI],       // 全リング共通の通路
+  // 通路は瞬間移動させない。壁が自分の上に湧いたら避けようがないので、
   // 目標へ滑らせて「閉じてくるのが見える」状態にする
-  aim(){ this.targ = [rnd(0,TAU), rnd(0,TAU)]; },
-  newGaps(){ this.gaps = [rnd(0,TAU), rnd(0,TAU)]; this.aim(); },
-  reset(){ this.R = RMAX; this.reseed = 0; this.newGaps();
+  mkRing(){ return { R: RMAX, jit: [rnd(-SAND_JIT,SAND_JIT), rnd(-SAND_JIT,SAND_JIT)] }; },
+  reset(){ this.corr = [rnd(0,TAU), rnd(0,TAU)]; this.targ = this.corr.slice();
+           this.rings = [this.mkRing()]; this.reseed = 0;
            for(const b of this.bullets) b.live=false; },
   step(dt, k){
-    this.R -= Math.min(Math.max(this.R*0.50, 24), 120)*k*dt;  // 内側ほど遅い = 狭い時間が長い
-    if(this.R <= RMIN){ this.R = RMAX; this.newGaps(); }
+    const newest = this.rings[this.rings.length-1];
+    if(!newest || newest.R <= SAND_NEXT) this.rings.push(this.mkRing());
+
     this.reseed += dt;
-    if(this.reseed >= 1.25){ this.reseed = 0; this.aim(); }
-    const rate = 1.7*k*dt;
-    for(let i=0;i<this.gaps.length;i++){
-      const d = ((this.targ[i]-this.gaps[i]+Math.PI)%TAU+TAU)%TAU - Math.PI;
-      this.gaps[i] += Math.max(-rate, Math.min(rate, d));
+    if(this.reseed >= SAND_AIM){ this.reseed = 0; this.targ = [rnd(0,TAU), rnd(0,TAU)]; }
+
+    const rate = SAND_SLIDE*k*dt;
+    for(let i=0;i<this.corr.length;i++){        // 通路そのものが滑る
+      const d = ((this.targ[i]-this.corr[i]+Math.PI)%TAU+TAU)%TAU - Math.PI;
+      this.corr[i] += Math.max(-rate, Math.min(rate, d));
     }
-    const R = this.R;
-    // 隙間は弧長が保たれるよう、内側ほど角度を広げる
-    const half = Math.min(1.20, Math.max(0.22, 56/R));
-    const step = Math.min(0.32, 21/R);
+    for(const r of this.rings)
+      r.R -= Math.min(Math.max(r.R*0.50, 24), 120)*k*dt;  // 内側ほど遅い = 狭い時間が長い
+    this.rings = this.rings.filter(r => r.R > RMIN);
+
     for(const b of this.bullets) b.live = false;
-    for(let a=0; a<TAU; a+=step){
-      let blocked = false;
-      for(const gp of this.gaps){
-        let d = Math.abs(((a-gp+Math.PI)%TAU+TAU)%TAU - Math.PI);
-        if(d < half){ blocked = true; break; }
+    for(const r of this.rings){
+      const R = r.R;
+      // 隙間は弧長が保たれるよう、内側ほど角度を広げる
+      const half = Math.min(1.20, Math.max(0.22, 56/R));
+      const step = Math.min(0.32, 21/R);
+      for(let a=0; a<TAU; a+=step){
+        let blocked = false;
+        for(let i=0;i<this.corr.length;i++){
+          const gp = this.corr[i] + r.jit[i];   // 共通の通路 + リングごとの散らし
+          let d = Math.abs(((a-gp+Math.PI)%TAU+TAU)%TAU - Math.PI);
+          if(d < half){ blocked = true; break; }
+        }
+        if(blocked) continue;
+        const b = take(this.bullets);
+        b.live=true; b.r=6.5;
+        b.x = CX + Math.cos(a)*R; b.y = CY + Math.sin(a)*R;
+        b.vx=0; b.vy=0;
       }
-      if(blocked) continue;
-      const b = take(this.bullets);
-      b.live=true; b.r=6.5;
-      b.x = CX + Math.cos(a)*R; b.y = CY + Math.sin(a)*R;
-      b.vx=0; b.vy=0;
     }
   }
 };

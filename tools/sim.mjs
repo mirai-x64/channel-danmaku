@@ -17,6 +17,19 @@ const src = html.slice(i0, i1 + END.length);
 
 const W = 900, H = 600, CX = W / 2, CY = H / 2;
 const TAU = Math.PI * 2;
+
+/* 乱数は必ず種から出す。
+   種を固定しないと、番組に無関係な定数を振っただけで結果が動く。
+   実際それで「腕の本数は 4本=60s / 5本=4.9s の崖」という
+   ありもしない結論を一度出している。差が出たらまず種を疑うこと。 */
+let _s = 1;
+function seed(n) { _s = (n >>> 0) || 1; }
+Math.random = function () {                    // 番組側は Math.random を直接も呼ぶ
+  _s |= 0; _s = (_s + 0x6D2B79F5) | 0;
+  let t = Math.imul(_s ^ (_s >>> 15), 1 | _s);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
 const rnd = (a, b) => a + Math.random() * (b - a);
 const { CH } = new Function('W','H','CX','CY','TAU','rnd',
   src + '\nreturn {CH};')(W, H, CX, CY, TAU, rnd);
@@ -25,23 +38,33 @@ const { CH } = new Function('W','H','CX','CY','TAU','rnd',
    ・反応遅れ: DELAY 秒前の盤面で判断する(完璧AIは死なないので難度を測れない)
    ・速度上限: マウスでも瞬間移動はできない
    ・弾速は前スナップショットとの最近傍対応から推定する(番組ごとの知識は使わない) */
-const DELAY = 0.15, SPEED = Number(process.env.SPEED || 700), DOT = 3;
-const LOOK = 0.5, LSTEP = 0.05;
+const DELAY = Number(process.env.DELAY ?? 0.15), SPEED = Number(process.env.SPEED || 700), DOT = 3;
+const LOOK = Number(process.env.LOOK ?? 0.5), LSTEP = 0.05;
 const DIRS = [];
 for (let i = 0; i < 16; i++) DIRS.push([Math.cos(i * TAU / 16), Math.sin(i * TAU / 16)]);
 DIRS.push([0, 0]);
 
-const snap = (ch) => ch.bullets.filter(b => b.live).map(b => ({ x: b.x, y: b.y, r: b.r }));
+/* 弾はプールの番号で見分ける。番号は番組が使い回す間ずっと同じ弾を指すので、
+   前のスナップショットとの対応が一意に決まる。
+   番組ごとの知識は要らないまま、対応だけが正しくなる。 */
+const snap = (ch) => ch.bullets.map((b, i) => b.live ? { i, x: b.x, y: b.y, r: b.r } : null)
+                               .filter(Boolean);
 
+/* 最近傍で対応させると、湧いたばかりの弾が近くの別の弾と結ばれて
+   出鱈目な速度になる。気象通報のように毎フレーム湧き続ける番組では
+   これが常時起きていて、AI は嘘の速度を信じて壁に歩き込んでいた。
+   盤面には常に 200px 以上空いた点があったのに 3s で死んでいたのはそのため。
+   壊れていたのは番組ではなく測定器の方だった。 */
+const MAXV = 2000;
 function withVel(now, prev) {
+  const by = new Map();
+  for (const p of prev) by.set(p.i, p);
   return now.map(b => {
-    let bd = 900, bp = null;
-    for (const p of prev) {
-      const d = (p.x - b.x) ** 2 + (p.y - b.y) ** 2;
-      if (d < bd) { bd = d; bp = p; }
-    }
-    return bp ? { ...b, vx: (b.x - bp.x) / LSTEP, vy: (b.y - bp.y) / LSTEP }
-              : { ...b, vx: 0, vy: 0 };
+    const p = by.get(b.i);
+    if (!p) return { ...b, vx: 0, vy: 0 };            // 今湧いた弾。速度はまだ分からない
+    const vx = (b.x - p.x) / LSTEP, vy = (b.y - p.y) / LSTEP;
+    // 番号が使い回された直後は座標が飛ぶ。別の弾なので速度は名乗らない
+    return Math.hypot(vx, vy) > MAXV ? { ...b, vx: 0, vy: 0 } : { ...b, vx, vy };
   });
 }
 
@@ -80,6 +103,7 @@ function safeStart(ch) {
 
 /* 1番組に固定して、死ぬまでの秒数を返す */
 function run(idx, cap = 60, seedShift = 0) {
+  seed(seedShift + 1);
   for (const c of CH) c.reset();
   for (let i = 0; i < seedShift; i++) CH[idx].step(1 / 120, 1);
 
@@ -126,6 +150,7 @@ function run(idx, cap = 60, seedShift = 0) {
    これが指の止まる瞬間にあたる。 */
 const PINCH = 7, COOL = 1.5;
 function play(cap = 90, seedShift = 0) {
+  seed(seedShift + 1);
   for (const c of CH) c.reset();
   for (let i = 0; i < seedShift; i++) for (const c of CH) c.step(1 / 120, 1);
 
@@ -187,6 +212,7 @@ if (process.argv[2] === 'margin') {
   for (let i = 0; i < CH.length; i++) {
     const all = [];
     for (let n = 0; n < 6; n++) {
+      seed(n * 37 + i * 101 + 1);
       for (const c of CH) c.reset();
       for (let s = 0; s < n * 37; s++) CH[i].step(1 / 120, 1);
       const ch = CH[i];
@@ -225,6 +251,148 @@ if (process.argv[2] === 'margin') {
       `40px未満 ${frac(40).padStart(5)}%  25px未満 ${frac(25).padStart(5)}%  ` +
       `15px未満 ${frac(15).padStart(5)}%`);
   }
+  process.exit(0);
+}
+
+/* 回した「先」の測定 — ここが賭けの本体で、固定時の難度とは別の話。
+   回した瞬間の自機は動かない。出た先の弾がどこにあるかは選べない。
+
+   見るのは2つの裾:
+     即死率  — 回した直後 GRACE 秒以内に死ぬ割合。高いと回すのが罰になり、
+               「回さない」が最適解になってひねりが死ぬ。
+     生還率  — 回した先で SAFE 秒以上もつ割合。高いと回すのがボムになり、
+               「詰まったら回す」だけの作業になってやはり賭けでなくなる。
+   どちらの裾も薄すぎず、厚すぎないのが賭けの成立条件。 */
+const GRACE = 0.3, SAFE = 3.0;
+function turnTest(from, to, seedShift) {
+  seed(seedShift + 1);
+  for (const c of CH) c.reset();
+  for (let i = 0; i < seedShift; i++) for (const c of CH) c.step(1 / 120, 1);
+
+  const dt = 1 / 120;
+  let x = CX, y = H - 110, t = 0;
+  let hist = [], prevSnap = [], field = [], acc = 0;
+
+  // 回すまでは from を普通に避ける(死んだ状態から回すことはできない)
+  const WARM = 2.5;
+  let cur = from, switched = -1;
+
+  while (t < WARM + 8) {
+    for (const c of CH) c.step(dt, 1);
+    t += dt;
+
+    if (switched < 0 && t >= WARM) {           // ここで回す
+      cur = to; switched = t;
+      hist = []; prevSnap = []; field = [];
+      // 出た瞬間、その場に弾があれば猶予はゼロ
+      for (const b of CH[cur].bullets) {
+        if (b.live && Math.hypot(b.x - x, b.y - y) < b.r + DOT) return { dt: 0, margin: 0 };
+      }
+    }
+
+    hist.push(snap(CH[cur]));
+    const want = Math.round(DELAY / dt);
+    const seen = hist.length > want ? hist[hist.length - 1 - want] : hist[0];
+    acc += dt;
+    if (acc >= LSTEP) { acc = 0; field = withVel(seen, prevSnap); prevSnap = seen; }
+
+    let best = -1e9, bx = 0, by = 0;
+    for (const [dx, dy] of DIRS) {
+      const s = score(x, y, dx, dy, field);
+      if (s > best) { best = s; bx = dx; by = dy; }
+    }
+    const nx = Math.max(4, Math.min(W - 4, x + bx * SPEED * dt));
+    const ny = Math.max(4, Math.min(H - 4, y + by * SPEED * dt));
+    for (const b of CH[cur].bullets) {
+      if (!b.live) continue;
+      if (segDist(b.x, b.y, x, y, nx, ny) < b.r + DOT) {
+        if (switched < 0) return null;         // 回す前に死んだ = この試行は無効
+        return { dt: t - switched };
+      }
+    }
+    x = nx; y = ny;
+    if (hist.length > 200) hist.shift();
+  }
+  return switched < 0 ? null : { dt: t - switched };
+}
+
+/* 番組ごとの「湧いた先の危なさ」。turn は組み合わせごとで遅いので、
+   自機を盤面じゅうに置き直して GRACE 秒だけ避けさせる。
+   出た先は自分で選べないので、盤面の危険な面積そのものが即死率になる。 */
+if (process.argv[2] === 'cover') {
+  const dt = 1 / 120;
+  console.log(`湧いた先が即死になる割合 (${GRACE}s以内)\n`);
+  for (let i = 0; i < CH.length; i++) {
+    let dead = 0, total = 0;
+    for (let inst = 0; inst < 14; inst++) {
+      seed(inst * 61 + i * 7 + 1);
+      for (const c of CH) c.reset();
+      for (let s = 0; s < 240 + inst * 47; s++) CH[i].step(dt, 1);   // 適当な進行中の瞬間
+      const frozen = CH[i].bullets.filter(b => b.live).map(b => ({ ...b }));
+      for (let gx = 70; gx < W - 70; gx += 95) for (let gy = 70; gy < H - 70; gy += 95) {
+        // その瞬間の盤面から始めて、番組を進めながら GRACE 秒避ける
+        seed(inst * 61 + i * 7 + 1);   // frozen と同じ経過を再現する
+        for (const c of CH) c.reset();
+        for (let s = 0; s < 240 + inst * 47; s++) CH[i].step(dt, 1);
+        const ch = CH[i];
+        let x = gx, y = gy, t = 0, acc = 0, hist = [], prevSnap = [], field = [];
+        let died = false;
+        for (const b of frozen) if (Math.hypot(b.x - x, b.y - y) < b.r + DOT) died = true;
+        while (!died && t < GRACE) {
+          ch.step(dt, 1); t += dt;
+          hist.push(snap(ch));
+          const want = Math.round(DELAY / dt);
+          const seen = hist.length > want ? hist[hist.length - 1 - want] : hist[0];
+          acc += dt;
+          if (acc >= LSTEP) { acc = 0; field = withVel(seen, prevSnap); prevSnap = seen; }
+          let best = -1e9, bx = 0, by = 0;
+          for (const [dx, dy] of DIRS) {
+            const s = score(x, y, dx, dy, field);
+            if (s > best) { best = s; bx = dx; by = dy; }
+          }
+          const nx = Math.max(4, Math.min(W - 4, x + bx * SPEED * dt));
+          const ny = Math.max(4, Math.min(H - 4, y + by * SPEED * dt));
+          for (const b of ch.bullets) {
+            if (b.live && segDist(b.x, b.y, x, y, nx, ny) < b.r + DOT) { died = true; break; }
+          }
+          x = nx; y = ny;
+        }
+        total++; if (died) dead++;
+      }
+    }
+    console.log(`${CH[i].name.padEnd(6)} ${(dead / total * 100).toFixed(0).padStart(3)}%  (n=${total})`);
+  }
+  process.exit(0);
+}
+
+if (process.argv[2] === 'turn') {
+  const N = Number(process.argv[3] || 40);
+  console.log(`回した先で何が起きるか / 各組 ${N} 回\n`);
+  let gAll = [];
+  for (let from = 0; from < CH.length; from++) {
+    for (let to = 0; to < CH.length; to++) {
+      if (from === to) continue;               // 直前と同じ番組は引かない
+      const rs = [];
+      for (let n = 0; n < N; n++) {
+        const r = turnTest(from, to, n * 41 + from * 7 + to * 13);
+        if (r) rs.push(r.dt);
+      }
+      if (!rs.length) continue;
+      gAll = gAll.concat(rs);
+      const die = rs.filter(v => v <= GRACE).length / rs.length * 100;
+      const safe = rs.filter(v => v >= SAFE).length / rs.length * 100;
+      rs.sort((a, b) => a - b);
+      console.log(`${CH[from].name} → ${CH[to].name.padEnd(6)} ` +
+        `即死(${GRACE}s以内) ${die.toFixed(0).padStart(3)}%  ` +
+        `生還(${SAFE}s以上) ${safe.toFixed(0).padStart(3)}%  ` +
+        `中央 ${rs[rs.length >> 1].toFixed(1)}s`);
+    }
+  }
+  const die = gAll.filter(v => v <= GRACE).length / gAll.length * 100;
+  const safe = gAll.filter(v => v >= SAFE).length / gAll.length * 100;
+  console.log(`\n全体  即死 ${die.toFixed(0)}%  生還 ${safe.toFixed(0)}%  (n=${gAll.length})`);
+  if (die < 5)  console.log('→ 即死がほぼ無い。回すことが安全策になっていて賭けになっていない');
+  if (safe > 80) console.log('→ ほぼ必ず生還する。回すのがボムに退化している');
   process.exit(0);
 }
 
