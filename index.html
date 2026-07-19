@@ -161,9 +161,9 @@ const shopping = {
 const WEA_SWEEP = 0.57, WEA_REST = 0.45, WEA_N = 64, WEA_GAP = 0.085, WEA_SP = 140, WEA_DRIFT = 0.22;
 const weather = {
   name:'気象通報', tint:'#6fd3ff',
-  bullets: pool(1200), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true,
+  bullets: pool(1200), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true, flip: false,
   reset(){ for(const b of this.bullets) b.live=false;
-           this.edge=0; this.pos=0; this.fire=0; this.rest=0; this.gap=0.5; this.sweeping=true; },
+           this.edge=0; this.pos=0; this.fire=0; this.rest=0; this.gap=0.5; this.sweeping=true; this.flip=false; },
   step(dt, k){
     if(this.sweeping){
       /* 掃射の進み pos は「1発撃つごとに 1/N」進める。
@@ -176,7 +176,14 @@ const weather = {
       while(this.fire >= iv && this.pos < 1){
         this.fire -= iv;
         this.pos += 1/WEA_N;
-        const u = Math.min(1, this.pos), sp = WEA_SP*k;
+        /* 掃く向きを一掃きごとに入れ替える。壁の形は左右反転するだけで
+           幾何は変わらないので、盤面が閉じる心配なしに単調さだけ崩せる。
+           辺そのものを変えるのは危険 — 直交する壁も向かい合う壁も、
+           途中で交差した瞬間に「両方の隙間に同時に居る」ことを要求してくる。
+           実際いまの条件(画面が空いた時だけ辺を変える)は 60秒間ずっと
+           上辺のままで一度も発火していない。 */
+        const u = this.flip ? 1 - Math.min(1, this.pos) : Math.min(1, this.pos);
+        const sp = WEA_SP*k;
         if(Math.abs(u - this.gap) < WEA_GAP) continue;   // 隙間。ここだけ通れる
         let x,y,ax,ay;
         // 画面のすぐ外ではなく十分外から湧かせる。端に寄っていると
@@ -193,7 +200,7 @@ const weather = {
     } else {
       this.rest += dt*k;
       if(this.rest >= WEA_REST){
-        this.sweeping = true; this.fire = 0;
+        this.sweeping = true; this.fire = 0; this.flip = !this.flip;
         /* 向かい合う壁を同時に飛ばさない。
            上下から来た壁は途中で正面衝突し、その瞬間だけは
            「両方の隙間に同時に居る」ことが要求される。隙間の移動 WEA_DRIFT が
