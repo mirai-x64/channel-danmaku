@@ -282,11 +282,28 @@ let cur = 0, cool = 0, nameT = 0, noiseFrame = 0;
 let alive = true, tRun = 0, best = 0, started = false;
 const COOL = 1.5;
 
+/* 番組は「ずっと前からやっている」ので、始まりの瞬間も途中である。
+   reset して 0 から回すと、毎回まったく同じ盤面から始まることになり、
+   実際 AI が 4.85s / 4.85s / 4.75s と同じ死に方を繰り返した。
+   進みをランダムに送ってから始める。
+
+   ただし送った先が自機の上だと、開始と同時に死ぬ。
+   それは賭けではなく理不尽なので、開始位置が空いている引きだけを採る。 */
 function resetGame(){
-  for(const c of CH) c.reset();
-  cur = 0; cool = 0; nameT = 0.5; noiseFrame = 0;
   P.x = P.tx = P.px = CX; P.y = P.ty = P.py = H-110;
   alive = true; tRun = 0;
+  cool = 0; nameT = 0.5; noiseFrame = 0;
+
+  for(let attempt=0; attempt<40; attempt++){
+    for(const c of CH) c.reset();
+    cur = (Math.random()*CH.length)|0;
+    const ahead = 30 + ((Math.random()*220)|0);
+    for(let s=0;s<ahead;s++) for(const c of CH) c.step(1/60, 1);
+    let clear = true;
+    for(const b of CH[cur].bullets)
+      if(b.live && Math.hypot(b.x-P.x, b.y-P.y) < 90){ clear = false; break; }
+    if(clear) return;
+  }
 }
 resetGame();
 
