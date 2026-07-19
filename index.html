@@ -133,10 +133,17 @@ const shopping = {
    SP=140 / REST=0.15 では、先読み 0.5s と 1.0s の測定が 15.8s と 16.0s で一致する。
    測定器の既知の偏りが答えを変えない点なので、この難度は信用してよい。
    SP=210 では同じ2つが 3.3s と 31.0s に割れていた = 読んではいけない領域だった。 */
-const WEA_SWEEP = 1.05, WEA_REST = 0.15, WEA_N = 30, WEA_GAP = 0.085, WEA_SP = 140, WEA_DRIFT = 0.22;
+/* 壁の弾の間隔は「壁かどうか」を決める。自機のドットは半径 DOT=3 なので、
+   隣り合う弾の縁が 2*DOT=6px 以上空いていれば、そこは通れる = 壁ではない。
+   WEA_N=30 では間隔 W/30=30px、縁の間は 30-12=18px あり、
+   気象通報の壁は全域が通り抜け可能だった(壁の弾の 100% がそうだった)。
+   即死率 5%、生存 3〜31s のばらつき、AI が壁に歩き込むこと、
+   前回まで見ていた症状はすべてこれ一つで説明がつく。壁が壁でなかった。
+   間隔 = W/WEA_N を 2*r + 2*DOT = 18px より内側に取る。64 で 14px(縁の間 2px)。 */
+const WEA_SWEEP = 1.05, WEA_REST = 0.15, WEA_N = 64, WEA_GAP = 0.085, WEA_SP = 140, WEA_DRIFT = 0.22;
 const weather = {
   name:'気象通報', tint:'#6fd3ff',
-  bullets: pool(620), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true,
+  bullets: pool(1200), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true,
   reset(){ for(const b of this.bullets) b.live=false;
            this.edge=0; this.pos=0; this.fire=0; this.rest=0; this.gap=0.5; this.sweeping=true; },
   step(dt, k){
@@ -195,7 +202,7 @@ const weather = {
 const RMAX = 560, RMIN = 14, SAND_NEXT = 300, SAND_JIT = 0.20, SAND_SLIDE = 1.7, SAND_AIM = 1.25;
 const sandstorm = {
   name:'砂嵐', tint:'#cfd6e0',
-  bullets: pool(760), rings: [], reseed: 0,
+  bullets: pool(1400), rings: [], reseed: 0,
   corr: [0, Math.PI], targ: [0, Math.PI],       // 全リング共通の通路
   // 通路は瞬間移動させない。壁が自分の上に湧いたら避けようがないので、
   // 目標へ滑らせて「閉じてくるのが見える」状態にする
@@ -224,7 +231,8 @@ const sandstorm = {
       const R = r.R;
       // 隙間は弧長が保たれるよう、内側ほど角度を広げる
       const half = Math.min(1.20, Math.max(0.22, 56/R));
-      const step = Math.min(0.32, 21/R);
+      // 弧の間隔も 2*r + 2*DOT = 19px より内側に取る。21px では輪の 93% が通れた
+      const step = Math.min(0.23, 15/R);
       for(let a=0; a<TAU; a+=step){
         let blocked = false;
         for(let i=0;i<this.corr.length;i++){
@@ -297,12 +305,33 @@ function segDist(px,py,ax,ay,bx,by){
   return Math.hypot(px-cx, py-cy);
 }
 
+/* ---------- 検証用の覗き穴 ----------
+   tools/play.mjs が実際のブラウザで遊んで確かめるために使う。
+   sim.mjs は番組の定義を Node で回すだけなので、入力・当たり・チャンネル切替が
+   組み上がった状態で動くかは見ていない。そこを見るための穴。
+   できるのは「読む」ことと「キー入力と同じこと」だけで、挙動は変えない。 */
+const __dbg = {
+  get cur(){ return cur; }, get alive(){ return alive; }, get t(){ return tRun; },
+  get cool(){ return cool; }, COOL, CH, P, DOT,
+  live: () => CH[cur].bullets.filter(b => b.live).length,
+  state(){ return {cur, ch:CH[cur].name, cool:+cool.toFixed(2), alive,
+                   t:+tRun.toFixed(2), live:this.live()}; },
+  reset(){ resetGame(); started = true; },
+  turn(){ turnKnob(); },
+  setChannel(n){ cur = n; nameT = 0.5; started = true; },
+  aim(x, y){ P.tx = x; P.ty = y; },
+  onFrame: null,
+};
+window.__dbg = __dbg;
+
 /* ---------- ループ ---------- */
 let last = performance.now();
 function frame(now){
   let dt = (now-last)/1000; last = now;
   if(dt > 0.05) dt = 0.05;
   requestAnimationFrame(frame);
+
+  if(__dbg.onFrame) __dbg.onFrame(dt);   // 検証用。人間が見て動かすのと同じ位置に置く
 
   const k = alive ? 1 + Math.min(tRun/90, 0.4) : 0;   // ゆるい加速。走行が終わるように
 
