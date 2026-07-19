@@ -92,23 +92,30 @@ function driftOut(p, dt){
 /* 深夜通販 — 中心から周期的に全方位へ放射。腕は回りながら伸びる。
    同心円状に撃つと外周ほど弾がまばらになり、隅が永久に安全地帯になる。
    腕を回すと、半径 d で隙間に留まるのに必要な横速度が ω*d になり、
-   外へ逃げるほど忙しくなる。隅の安全地帯はこれで消える。 */
+   外へ逃げるほど忙しくなる。隅の安全地帯はこれで消える。
+
+   回る点源から等時間間隔で撃つと、隣り合う2発の角度差 ω*iv は撃った瞬間に凍り、
+   間隔は半径に比例して開く。腕は外周で必ずほつれる。
+   ω=1.10 / iv=0.085 では隅(d=540)で 52px 開いており、腕の 65% はどこでも
+   通り抜けられた。「腕を横切れるのは通り抜け口だけ」という前提が成り立っていない。
+   隅での間隔 sqrt((sp*iv)^2 + (ω*iv*d)^2) を 2*r + 2*DOT = 18px 未満に収める。
+   ω=0.55 / iv=0.050 で 16.6px。回転を落とした分は撃つ間隔で取り戻す。 */
 const shopping = {
   name:'深夜通販', tint:'#ff9d4d',
-  bullets: pool(420), th: 0, dir: 1, flip: 0, fire: 0, door: 0,
+  bullets: pool(700), th: 0, dir: 1, flip: 0, fire: 0, door: 0,
   reset(){ for(const b of this.bullets) b.live=false;
            this.th=0; this.dir=1; this.flip=0; this.fire=0; this.door=0; },
   step(dt, k){
     this.flip += dt;
     if(this.flip >= 2.2){ this.flip = 0; this.dir = -this.dir; }  // 巻き戻ると乗っていた隙間が塞がる
-    this.th += this.dir * 1.10 * k * dt;
+    this.th += this.dir * 0.55 * k * dt;
 
     this.door += dt;
     const DOOR = 0.80, OPEN = 0.18;      // 腕に周期的な通り抜け口。腕を横切れる唯一の場所
     if(this.door >= DOOR) this.door -= DOOR;
 
     this.fire += dt;
-    const iv = 0.085/k;
+    const iv = 0.050/k;
     while(this.fire >= iv){
       this.fire -= iv;
       if(this.door < OPEN) continue;
@@ -140,7 +147,18 @@ const shopping = {
    即死率 5%、生存 3〜31s のばらつき、AI が壁に歩き込むこと、
    前回まで見ていた症状はすべてこれ一つで説明がつく。壁が壁でなかった。
    間隔 = W/WEA_N を 2*r + 2*DOT = 18px より内側に取る。64 で 14px(縁の間 2px)。 */
-const WEA_SWEEP = 1.05, WEA_REST = 0.15, WEA_N = 64, WEA_GAP = 0.085, WEA_SP = 140, WEA_DRIFT = 0.22;
+/* 掃射は「撃ち終わるまでの間も落ちている」ので、一枚の壁は水平な線ではなく
+   高さ SP*SWEEP の斜めの坂になる。壁と壁の縦の間隔は SP*(SWEEP+REST) なので、
+   実際に通れる通路の高さは差し引き **SP*REST** しかない。
+   SWEEP=1.05 / REST=0.15 では にじみ 147px に対し間隔 168px、通路は 21px だった。
+   弾の直径 12px + ドット 6px を引くとほぼ残らない。
+   完全知覚で速度を倍にしても 4.1s のまま(人間相当と同じ値)だったのは、
+   難しかったからではなく、盤面が閉じていて腕前が効かなかったから。
+
+   なので REST は「休み」ではなく通路の高さそのものとして決める。
+   通路 SP*REST = 63px(弾の直径 12 + ドット 6 = 18px の3倍以上)、にじみ SP*SWEEP = 80px。
+   ここが即死率 16% と、一点から始めて 30s 閉じないことの両立点。 */
+const WEA_SWEEP = 0.57, WEA_REST = 0.45, WEA_N = 64, WEA_GAP = 0.085, WEA_SP = 140, WEA_DRIFT = 0.22;
 const weather = {
   name:'気象通報', tint:'#6fd3ff',
   bullets: pool(1200), edge: 0, pos: 0, fire: 0, rest: 0, gap: 0.5, sweeping: true,
@@ -148,11 +166,16 @@ const weather = {
            this.edge=0; this.pos=0; this.fire=0; this.rest=0; this.gap=0.5; this.sweeping=true; },
   step(dt, k){
     if(this.sweeping){
-      this.pos += dt*k/WEA_SWEEP;
+      /* 掃射の進み pos は「1発撃つごとに 1/N」進める。
+         フレーム単位で進めると、1フレームに2発以上撃つ速さになった途端、
+         その2発が同じ u に重なって湧く。壁の実際の間隔は W/N ではなく
+         W/(1フレームあたりの発射数で割った数) になり、隙間が開く。
+         SWEEP を 1.05→0.57 にした時これが表に出た(間隔 14px のはずが 26px)。 */
       this.fire += dt*k;
       const iv = WEA_SWEEP/WEA_N;
-      while(this.fire >= iv){
+      while(this.fire >= iv && this.pos < 1){
         this.fire -= iv;
+        this.pos += 1/WEA_N;
         const u = Math.min(1, this.pos), sp = WEA_SP*k;
         if(Math.abs(u - this.gap) < WEA_GAP) continue;   // 隙間。ここだけ通れる
         let x,y,ax,ay;
